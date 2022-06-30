@@ -1,0 +1,543 @@
+APEX TRIGGERS:
+1-Get Started with Apex Triggers
+/*AccountAddressTriggers*/
+trigger AccountAddressTrigger on Account (before insert, before update) {
+    for(Account account:Trigger.New){
+        if(account.Match_Billing_Address__c == True)
+            account.ShippingPostalCode = account.BillingPostalCode; 
+    }
+}
+2-Bulk Apex Triggers
+/*ClosedOpportunityTrigger*/
+trigger ClosedOpportunityTrigger on Opportunity (after insert, after update) {
+    List<Task> tasklist = new List<Task>();
+
+
+    for(Opportunity opp:Trigger.New){
+        if(opp.StageName == 'Closed Won'){
+            tasklist.add(new Task(Subject = 'Follow Up Test Task', WhatId = opp.Id));
+        }
+    }
+    if(tasklist.size()>0){
+        insert tasklist;
+    }
+
+}
+Apex Testing
+1-Get Started with Apex Testing
+/*Verify Date class*/
+public class VerifyDate {
+	
+	//method to handle potential checks against two dates
+	public static Date CheckDates(Date date1, Date date2) {
+		//if date2 is within the next 30 days of date1, use date2.  Otherwise use the end of the month
+		if(DateWithin30Days(date1,date2)) {
+			return date2;
+		} else {
+			return SetEndOfMonthDate(date1);
+		}
+	}
+	
+	//method to check if date2 is within the next 30 days of date1
+ @TestVisible private static Boolean DateWithin30Days(Date date1, Date date2) {
+		//check for date2 being in the past
+	if( date2 < date1) { return false; }
+
+	//check that date2 is within (>=) 30 days of date1
+	Date date30Days = date1.addDays(30); //create a date 30 days away from date1
+		if( date2 >= date30Days ) { return false; }
+		else { return true; }
+	}
+
+	//method to return the end of the month of a given date
+	@TestVisible private static Date SetEndOfMonthDate(Date date1) {
+		Integer totalDays = Date.daysInMonth(date1.year(), date1.month());
+		Date lastDay = Date.newInstance(date1.year(), date1.month(), totalDays);
+		return lastDay;
+	}
+
+}
+2-Test Apex Triggers
+/*RestrictContactByName Trigger*/
+trigger RestrictContactByName on Contact (before insert) {
+For (Contact c : Trigger.New) {
+		if(c.LastName == 'INVALIDNAME') {	//invalidname is invalid
+			c.AddError('The Last Name "'+c.LastName+'" is not allowed for DML');
+		}
+
+	}
+}
+/*TestRestrictContactByName class*/
+@isTest
+private class TestRestrictContactByName {
+    @isTest static void Test_insertupdateContact(){
+        Contact cnt = new Contact();
+        cnt.LastName = 'INVALIDNAME';
+
+        Test.startTest();
+        Database.SaveResult result = Database.insert(cnt, false);
+        Test.stopTest();
+
+        System.assert(!result.isSuccess());
+        System.assert(result.getErrors().size()>0);
+        System.assertEquals('The Last Name "INVALIDNAME" is not allowed for DML', result.getErrors()[0].getMessage());
+
+    }
+}
+3- Create Test Data For Apex Tests
+/*RandomContactFactory class*/
+public class RandomContactFactory {
+
+    public static List<Contact>  generateRandomContacts(Integer numofContacts, String lastName){
+       List<Contact> contacts = new List<Contact>(); 
+
+        for(Integer i =0;i<numofContacts;i++) {
+            Contact cnt = new Contact(FirstName = 'Test '+ i, LastName = lastName);
+            contacts.add(cnt);
+        }
+        system.debug(contacts);
+        return contacts;
+
+    }
+}
+Asynchrounous Apex
+1- Use Future Methods
+/*AccountProcessor class*/
+public class AccountProcessor {
+ @future 
+    public static void countContacts(List<Id> accountIds){
+
+        List<Account> accountsToUpdate = new List<Account>();
+
+         List<Account> accounts = [Select Id, Name, (Select Id from Contacts) from Account Where Id in :accountIds];
+
+        For(Account acc:accounts){
+            List<Contact> contactList = acc.Contacts;
+            acc.Number_Of_Contacts__c = contactList.size();
+            accountsToUpdate.add(acc);       
+        }
+        update accountsToUpdate;
+    }
+}
+/*AccountProcessorTest*/
+@IsTest
+public class AccountProcessorTest {
+    @IsTest
+    private static void testCountContacts(){
+
+        Account newAcc = new Account(Name = 'Test Account');
+        insert newAcc;
+
+        Contact newCnt1 = new Contact(FirstName = 'John', LastName = 'Doe', AccountId = newAcc.Id);
+        insert newCnt1;
+
+         Contact newCnt2 = new Contact(FirstName = 'Jane', LastName = 'Doe', AccountId = newAcc.Id);
+        insert newCnt2;
+
+        List<Id> accountIds = new List<Id>();
+        accountIds.add(newAcc.Id);
+
+        Test.startTest();
+        AccountProcessor.countContacts(accountIds);
+        Test.stopTest();
+
+    }
+
+
+}
+2-Use Batch Apex
+/*LeadProcessor class*/
+global class LeadProcessor implements Database.Batchable<sObject>{
+global Integer count = 0;
+    global Database.QueryLocator start(Database.BatchableContext bc){
+        return Database.getQueryLocator('SELECT ID, LeadSource FROM Lead');
+    }
+    global void execute(Database.BatchableContext bc, List<Lead> L_list){
+        List<lead> L_list_new = new List<lead>();
+
+        for(lead L: L_list){
+            L.leadsource = 'Dreamforce';
+            L_list_new.add(L);
+            count+=1;   
+        }
+        update L_list_new;
+    }
+    global void finish(Database.BatchableContext bc){
+        system.debug('count = ' + count);
+    }
+
+}
+/*LeadProcessorTest class*/
+@isTest
+public class LeadProcessorTest {
+
+    @isTest
+    public static void testit(){
+        List<lead> L_list = new List<lead>();
+
+        for(Integer i =0;i<200;i++){
+            Lead L = new lead();
+            L.LastName= 'name' + i;
+            L.Company = 'Company';
+            L.Status = 'Random Status';
+            L_list.add(L);
+        }
+        insert L_list;
+        Test.startTest();
+        LeadProcessor ip = new LeadProcessor();
+        Id batchId = Database.executeBatch(ip);
+        Test.stopTest();
+    }
+}
+3-Control Processes with Queueable Apex
+/*AddPrimaryContact class*/
+public class AddPrimaryContact implements Queueable {
+    private Contact cont;
+    private String state;
+    public  AddPrimaryContact(Contact cont, String state) {
+        this.cont = cont;
+        this.state = state;
+    }
+    public void execute(QueueableContext context) {
+       List<Account> accounts = [Select Id, Name, (Select FirstName , LastName, Id from contacts)from Account where BillingState = :state Limit 200];
+       List<Contact> primaryContacts = new List<Contact>();
+        for(Account acc: accounts){
+            Contact c = cont.clone();
+            c.AccountId = acc.Id;
+            primaryContacts.add(c);
+        }
+
+        if(primaryContacts.size() > 0){
+            insert primaryContacts;
+        }
+    }
+}
+/*AddPrimaryContactTest class*/
+@isTest
+public class AddPrimaryContactTest {
+    static testmethod void testQueueable() {
+
+       List<Account> testAccnt = new List<Account>();
+        for(Integer i=0;i<50;i++){
+            testAccnt.add(new Account(Name = 'Account' + i, BillingState = 'CA'));
+        }
+        for(Integer i=0;i<50;i++){
+            testAccnt.add(new Account(Name = 'Account' + i, BillingState = 'NY'));
+        }
+        insert testAccnt;
+        Contact testContact = new Contact(FirstName = 'John',LastName = 'Doe');
+        insert testContact;
+
+        AddPrimaryContact addit = new addPrimaryContact(testContact,'CA');
+
+        Test.startTest();
+        System.enqueueJob(addit);
+        Test.stopTest();
+        // Validate the job ran. Check if record have correct parentId now
+        System.assertEquals(50, [select count() from Contact where accountId in (Select Id from Account where BillingState = 'CA')]);
+    }
+}
+4-Schedule Jobs Using the Apex Scheduler
+/* DailyLeadProcessor class*/
+public class DailyLeadProcessor implements schedulable{
+
+    public void execute(schedulableContext sc) {
+        List<lead> l_lst_new = new List<lead>();
+        List<lead> l_lst = new List<lead>([select id, leadsource from lead where leadsource = null]);
+        for(lead l : l_lst) {
+            l.leadsource = 'Dreamforce';
+            l_lst_new.add(l);
+        }
+        update l_lst_new;
+    }
+
+}
+/*DailyLeadProcessorTest class*/
+@isTest
+public class DailyLeadProcessorTest {
+    @testSetup
+    static void setup(){
+        List<Lead> lstOfLead = new List<Lead>();
+        for(Integer i = 1; i <= 200; i++){
+            Lead ld = new Lead(Company = 'Comp' + i ,LastName = 'LN'+i, Status = 'Working - Contacted');
+            lstOfLead.add(ld);
+        }
+        Insert lstOfLead;
+    }
+    static testmethod void testDailyLeadProcessorScheduledJob(){
+        String sch = '0 5 12 * * ?';
+        Test.startTest();
+        String jobId = System.schedule('ScheduledApexTest', sch, new DailyLeadProcessor());
+
+        List<Lead> lstOfLead = [SELECT Id FROM Lead WHERE LeadSource = null LIMIT 200];
+        System.assertEquals(200, lstOfLead.size());
+
+        Test.stopTest();
+    }
+}
+Apex  Integration Services
+1-Apex Rest callouts
+/*AnimalLocator class*/
+	public class AnimalLocator {
+	public class cls_animal {
+		public Integer id;	
+		public String name;	
+		public String eats;	
+		public String says;	
+	}    
+public class JSONOutput{
+	public cls_animal animal;
+
+	//public JSONOutput parse(String json){
+	//return (JSONOutput) System.JSON.deserialize(json, JSONOutput.class);
+	//}
+}
+
+    public static String getAnimalNameById (Integer id) {
+        Http http = new Http();
+        HttpRequest request = new HttpRequest();
+        request.setEndpoint('https://th-apex-http-callout.herokuapp.com/animals/' + id);
+        //request.setHeader('id', String.valueof(id)); -- cannot be used in this challenge :)
+        request.setMethod('GET');
+        HttpResponse response = http.send(request);
+        system.debug('response: ' + response.getBody());
+        //Map<String,Object> map_results = (Map<String,Object>) JSON.deserializeUntyped(response.getBody());
+        jsonOutput results = (jsonOutput) JSON.deserialize(response.getBody(), jsonOutput.class);
+        //Object results = (Object) map_results.get('animal');
+		system.debug('results= ' + results.animal.name);
+        return(results.animal.name);
+    }
+
+}
+/*AnimalLocatorTest class*/
+@IsTest
+public class AnimalLocatorTest {
+    @isTest
+    public static void testAnimalLocator() {
+        Test.setMock(HttpCalloutMock.class, new AnimalLocatorMock());
+        //Httpresponse response = AnimalLocator.getAnimalNameById(1);
+        String s =  AnimalLocator.getAnimalNameById(2);
+        system.debug('string returned: ' + s);
+    }
+
+}
+2-Apex SOAP Callouts
+/*ParkService class*/
+//Generated by wsdl2apex
+
+public class ParkService {
+    public class byCountryResponse {
+        public String[] return_x;
+        private String[] return_x_type_info = new String[]{'return','http://parks.services/',null,'0','-1','false'};
+        private String[] apex_schema_type_info = new String[]{'http://parks.services/','false','false'};
+        private String[] field_order_type_info = new String[]{'return_x'};
+    }
+    public class byCountry {
+        public String arg0;
+        private String[] arg0_type_info = new String[]{'arg0','http://parks.services/',null,'0','1','false'};
+        private String[] apex_schema_type_info = new String[]{'http://parks.services/','false','false'};
+        private String[] field_order_type_info = new String[]{'arg0'};
+    }
+    public class ParksImplPort {
+        public String endpoint_x = 'https://th-apex-soap-service.herokuapp.com/service/parks';
+        public Map<String,String> inputHttpHeaders_x;
+        public Map<String,String> outputHttpHeaders_x;
+        public String clientCertName_x;
+        public String clientCert_x;
+        public String clientCertPasswd_x;
+        public Integer timeout_x;
+        private String[] ns_map_type_info = new String[]{'http://parks.services/', 'ParkService'};
+        public String[] byCountry(String arg0) {
+            ParkService.byCountry request_x = new ParkService.byCountry();
+            request_x.arg0 = arg0;
+            ParkService.byCountryResponse response_x;
+            Map<String, ParkService.byCountryResponse> response_map_x = new Map<String, ParkService.byCountryResponse>();
+            response_map_x.put('response_x', response_x);
+            WebServiceCallout.invoke(
+              this,
+              request_x,
+              response_map_x,
+              new String[]{endpoint_x,
+              '',
+              'http://parks.services/',
+              'byCountry',
+              'http://parks.services/',
+              'byCountryResponse',
+              'ParkService.byCountryResponse'}
+            );
+            response_x = response_map_x.get('response_x');
+            return response_x.return_x;
+        }
+    }
+}
+/*ParkLocator class*/
+public class ParkLocator {
+    public static String[] country(String country){
+        ParkService.ParksImplPort parks = new ParkService.ParksImplPort();
+        String[] parksname = parks.byCountry(country);
+        return parksname;
+    }
+}
+/*ParkLocatorTest class*/
+@isTest
+private class ParkLocatorTest{
+    @isTest 
+    static void testParkLocator() {
+        Test.setMock(WebServiceMock.class, new ParkServiceMock());
+        String[] arrayOfParks = ParkLocator.country('India');
+
+        System.assertEquals('Park1', arrayOfParks[0]);
+    }
+}
+3-Apex Web Services
+/*AccountManager*/
+@RestResource(urlMapping = '/Accounts/*/contacts')
+global with sharing class AccountManager {
+    @HttpGet
+    global static Account getAccount() {
+        RestRequest request = RestContext.request;
+        String accountId = request.requestURI.substringBetween('Accounts/', '/contacts');
+        Account account = [SELECT Id, Name, (SELECT Id, Name FROM Contacts) FROM Account WHERE Id = :accountId];
+        return account;
+    }
+}
+/*AccountManagerTest*/
+@isTest
+private class AccountManagerTest {
+	@isTest
+    private static void testGetContactsByAccountId() {
+        Id accountId = createTestAccount();
+
+        RestRequest request = new RestRequest();
+        request.requestUri = 'https://yourInstance.salesforce.com/services/apexrest/Accounts/' + accountId + '/contacts';
+        request.httpMethod = 'GET';
+        RestContext.request = request;
+
+        Account account = AccountManager.getAccount();
+
+        System.assert(account != null);
+        System.assertEquals('Account Test Name', account.Name);
+    }
+
+    private static Id createTestAccount() {
+        Account account = new Account(Name = 'Account Test Name');
+        insert account;
+
+        Contact contact = new Contact(FirstName = 'Gregory', LastName = 'House', AccountId = account.Id);
+        insert contact;
+
+        return account.Id;
+    }
+}
+APEX SPECIALIST SUPERBADGE 
+/*MAINTAINENCEREQUEST.APXT*/
+trigger MaintenanceRequest on Case (before update, after update) {
+
+    if(Trigger.isUpdate && Trigger.isAfter){
+
+        MaintenanceRequestHelper.updateWorkOrders(Trigger.New, Trigger.OldMap);
+
+    }
+
+}
+
+
+/*MaintenanceRequestHelper*/
+public with sharing class MaintenanceRequestHelper {
+    public static void updateworkOrders(List<Case> updWorkOrders, Map<Id,Case> nonUpdCaseMap) {
+        Set<Id> validIds = new Set<Id>();
+
+
+        For (Case c : updWorkOrders){
+            if (nonUpdCaseMap.get(c.Id).Status != 'Closed' && c.Status == 'Closed'){
+                if (c.Type == 'Repair' || c.Type == 'Routine Maintenance'){
+                    validIds.add(c.Id);
+
+
+                }
+            }
+        }
+
+  /*WarehouseCalloutService.apxc*/
+  public with sharing class WarehouseCalloutService {
+
+    private static final String WAREHOUSE_URL = 'https://th-superbadge-apex.herokuapp.com/equipment';
+
+    //@future(callout=true)
+    public static void runWarehouseEquipmentSync(){
+
+        Http http = new Http();
+        HttpRequest request = new HttpRequest();
+
+        request.setEndpoint(WAREHOUSE_URL);
+        request.setMethod('GET');
+        HttpResponse response = http.send(request);
+
+
+        List<Product2> warehouseEq = new List<Product2>();
+
+        if (response.getStatusCode() == 200){
+            List<Object> jsonResponse = (List<Object>)JSON.deserializeUntyped(response.getBody());
+            System.debug(response.getBody());
+
+            for (Object eq : jsonResponse){
+                Map<String,Object> mapJson = (Map<String,Object>)eq;
+                Product2 myEq = new Product2();
+                myEq.Replacement_Part__c = (Boolean) mapJson.get('replacement');
+                myEq.Name = (String) mapJson.get('name');
+                myEq.Maintenance_Cycle__c = (Integer) mapJson.get('maintenanceperiod');
+                myEq.Lifespan_Months__c = (Integer) mapJson.get('lifespan');
+                myEq.Cost__c = (Decimal) mapJson.get('lifespan');
+                myEq.Warehouse_SKU__c = (String) mapJson.get('sku');
+                myEq.Current_Inventory__c = (Double) mapJson.get('quantity');
+                warehouseEq.add(myEq);
+            }
+
+            if (warehouseEq.size() > 0){
+                upsert warehouseEq;
+                System.debug('Your equipment was synced with the warehouse one');
+                System.debug(warehouseEq);
+            }
+
+        }
+    }
+}
+ /*WarehouseCalloutServiceTest.apxc*/
+  @isTest
+private class WarehouseCalloutServiceTest {   
+    @isTest  
+    static void testWareHouseCallout(){
+        Test.startTest();
+        // implement mock callout test here
+        Test.setMock(HTTPCalloutMock.class, new WarehouseCalloutServiceMock());
+        WarehouseCalloutService.runWarehouseEquipmentSync();
+        Test.stopTest();
+        System.assertEquals(1, [SELECT count() FROM Product2]);
+    }     
+}
+/*WarehouseSyncSchedule.apxc*/
+global class WarehouseSyncSchedule implements Schedulable {
+    global void execute(SchedulableContext ctx) {
+
+        WarehouseCalloutService.runWarehouseEquipmentSync();
+    }
+}
+/*WarehouseSyncScheduleTest.apxc*/
+@isTest
+public class WarehouseSyncScheduleTest {
+
+    @isTest static void WarehousescheduleTest(){
+        String scheduleTime = '00 00 01 * * ?';
+        Test.startTest();
+        Test.setMock(HttpCalloutMock.class, new WarehouseCalloutServiceMock());
+        String jobID=System.schedule('Warehouse Time To Schedule to Test', scheduleTime, new WarehouseSyncSchedule());
+        Test.stopTest();
+        //Contains schedule information for a scheduled job. CronTrigger is similar to a cron job on UNIX systems.
+        // This object is available in API version 17.0 and later.
+        CronTrigger a=[SELECT Id FROM CronTrigger where NextFireTime > today];
+        System.assertEquals(jobID, a.Id,'Schedule ');
+
+
+    }
+}
+
